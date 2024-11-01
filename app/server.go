@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"log"
 	"net"
 	"os"
 )
@@ -18,9 +20,32 @@ func main() {
 	 	fmt.Println("Failed to bind to port 6379")
 	 	os.Exit(1)
 	 }
-	 _, err = l.Accept()
+    tcpConn, err := l.Accept()
+    defer tcpConn.Close()
 	 if err != nil {
 	 	fmt.Println("Error accepting connection: ", err.Error())
 	 	os.Exit(1)
 	 }
+    readBuffer := make([]byte, 14)
+    _, err = tcpConn.Read(readBuffer)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println(bytes.Compare(readBuffer, []byte("*1\r\n$4\r\nPING\r\n")))
+    _, err = tcpConn.Write([]byte("+PONG\r\n"))
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("readBuffer: ", string(readBuffer))
+    
+
 }
+
+
+
+
+
+
+
+
+
