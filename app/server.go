@@ -20,29 +20,34 @@ func main() {
         fmt.Println("Failed to bind to port 6379")
         os.Exit(1)
     }
+    for {
     tcpConn, err := l.Accept()
-    defer tcpConn.Close()
-    if err != nil {
-        fmt.Println("Error accepting connection: ", err.Error())
-        os.Exit(1)
+        if err != nil {
+            log.Println("error accepting a client: ", err)
+        }
+        go handleClient(tcpConn)
+    
     }
+
+}
+
+func handleClient (client net.Conn) {
+    defer client.Close()
     for {
         readBuffer := make([]byte, 512)
-        _, err = tcpConn.Read(readBuffer)
+        _, err := client.Read(readBuffer)
         if err != nil {
-            log.Fatal(err)
+            log.Println("error reading from a client: ", err)
+            return
         }
         fmt.Println(bytes.Compare(readBuffer, []byte("*1\r\n$4\r\nPING\r\n")))
-        _, err = tcpConn.Write([]byte("+PONG\r\n"))
+        _, err = client.Write([]byte("+PONG\r\n"))
         if err != nil {
-            log.Fatal(err)
+            log.Println("error writing to a client: ", err)
+            return 
         }
         fmt.Println("readBuffer: ", string(readBuffer))
-
     }
-
-    
-
 }
 
 
