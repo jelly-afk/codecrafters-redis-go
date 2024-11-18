@@ -14,18 +14,15 @@ var _ = net.Listen
 var _ = os.Exit
 
 func main() {
-	fmt.Println("Logs from your program will appear here!")
 
 	
     l, err := net.Listen("tcp", "0.0.0.0:6379")
     if err != nil {
-        fmt.Println("Failed to bind to port 6379")
         os.Exit(1)
     }
     for {
     tcpConn, err := l.Accept()
         if err != nil {
-            log.Println("error accepting a client: ", err)
         }
         go handleClient(tcpConn)
     
@@ -35,11 +32,11 @@ func main() {
 
 func handleClient (client net.Conn) {
     defer client.Close()
+        redisMap := make(map[string]string)
     for {
         readBuffer := make([]byte, 512)
         _, err := client.Read(readBuffer)
         if err != nil {
-            log.Println("error reading from a client: ", err)
             return
         }
         resp := &RESP{
@@ -50,18 +47,14 @@ func handleClient (client net.Conn) {
         if err != nil {
             log.Fatal(err)
         }
-        fmt.Println("pREsp: ", parsedResp)
-        res, err := handleCommands(parsedResp)
-        fmt.Println("res: ", res)
+        res, err := handleCommands(parsedResp, redisMap)
         if err != nil {
             log.Fatal(err)
         }
         _, err = client.Write([]byte(res))
         if err != nil {
-            log.Println("error writing to a client: ", err)
             return 
         }
-        fmt.Println("readBuffer: ", string(readBuffer))
     }
 }
 
@@ -69,8 +62,6 @@ func parseResp(resp *RESP ) (interface{}, error) {
     switch resp.respStr[resp.idx] {
     case '*':
         endIdx := strings.Index(resp.respStr[resp.idx:], "\r\n")
-        fmt.Println("eidx: ", endIdx)
-        fmt.Println("resp: ", resp.respStr)
         arrLen, err := strconv.Atoi(resp.respStr[resp.idx+1:resp.idx+endIdx])
         if err != nil {
             return nil, err
@@ -82,12 +73,10 @@ func parseResp(resp *RESP ) (interface{}, error) {
             if err != nil {
                 log.Fatal(err)
             }
-            fmt.Println("resi ", res[i])
         }
         return res, nil
     case '$':
         endIdx := strings.Index(resp.respStr[resp.idx:], "\r\n")
-        fmt.Println()
         fmt.Printf("st: %d, end: %d\n", resp.idx, endIdx)
         strLen, err := strconv.Atoi(resp.respStr[resp.idx+1:resp.idx+endIdx])
         if err != nil {
@@ -95,7 +84,6 @@ func parseResp(resp *RESP ) (interface{}, error) {
         }
         str :=  resp.respStr[resp.idx+endIdx+2:resp.idx+endIdx+2+strLen]
         resp.idx += endIdx+4+strLen
-        fmt.Println("str: ", str)
         return str, nil
 
     }
@@ -103,30 +91,63 @@ func parseResp(resp *RESP ) (interface{}, error) {
     return nil, errors.New("invalid resp string")
 }
 
-func handleCommands (commands interface{}) (string, error) {
+func handleCommands (commands interface{}, rMap map[string]string) (string, error) {
     c, ok := commands.(string)
-    fmt.Println("cmdss: ", commands)
-    
-    arr, ok := commands.([]interface{})
-    if ok {
-        c, ok = arr[0].(string)
-        fmt.Printf("cmds: %v", arr)
-
+    strArr := make([]string, 0)
+    if !ok {
+        cmds, ok := commands.([]interface{})
+        if !ok {
+            return "", errors.New("not an array")
+        }
+        err := errors.New("test")
+        fmt.Printf("interf: %v", commands)
+        strArr, err= interfaceToString(cmds)
+        fmt.Printf("strArr: %d", len(strArr))
+        fmt.Printf("strArr: %v", strArr)
+        c = strArr[0]
+        if err != nil {
+            return "", err
+        }
     }
-    fmt.Println("cmd: ", c)
     switch c {
     case "PING":
         return "+PONG\r\n", nil
     case "ECHO":
-        st, ok := arr[1].(string)
-        if !ok {
-            return "", errors.New("invalis commands")
-        }
+        st := strArr[1]
         return fmt.Sprintf("$%d\r\n%s\r\n",len(st),st), nil
+    case "SET":
+        rMap[strArr[1]] = strArr[2]
+        return "+OK\r\n", nil 
+    case "GET":
+        val, ok := rMap[strArr[1]]
+        fmt.Printf("map:%s: %s\n", strArr[1], val)
+        if !ok {
+            return "$-1\r\n", nil
+        }
+        return fmt.Sprintf("$%d\r\n%s\r\n", len(val), val), nil
     }
     return "", errors.New("invalid commands")
 
 }
+
+func interfaceToString(interfArr []interface{}) ([]string, error) {
+    strArr := make([]string, 0)
+    for _, s := range interfArr {
+        st, ok := s.(string)
+        if !ok {
+            return nil, errors.New("non string value found")
+        }
+        trimmedSt := strings.TrimSpace(st)
+        if len(trimmedSt) < 1 {
+            continue
+        }
+        strArr = append(strArr, trimmedSt)
+    }
+    return strArr, nil
+}
+
+
+
 
 type RESP struct{
     respStr string
