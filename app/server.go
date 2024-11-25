@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var _ = net.Listen
@@ -32,7 +33,7 @@ func main() {
 
 func handleClient (client net.Conn) {
     defer client.Close()
-        redisMap := make(map[string]string)
+        redisMap := make(map[string][]interface{})
     for {
         readBuffer := make([]byte, 512)
         _, err := client.Read(readBuffer)
@@ -77,7 +78,6 @@ func parseResp(resp *RESP ) (interface{}, error) {
         return res, nil
     case '$':
         endIdx := strings.Index(resp.respStr[resp.idx:], "\r\n")
-        fmt.Printf("st: %d, end: %d\n", resp.idx, endIdx)
         strLen, err := strconv.Atoi(resp.respStr[resp.idx+1:resp.idx+endIdx])
         if err != nil {
             return nil, err
@@ -91,7 +91,7 @@ func parseResp(resp *RESP ) (interface{}, error) {
     return nil, errors.New("invalid resp string")
 }
 
-func handleCommands (commands interface{}, rMap map[string]string) (string, error) {
+func handleCommands (commands interface{}, rMap map[string][]interface{}) (string, error) {
     c, ok := commands.(string)
     strArr := make([]string, 0)
     if !ok {
@@ -100,10 +100,7 @@ func handleCommands (commands interface{}, rMap map[string]string) (string, erro
             return "", errors.New("not an array")
         }
         err := errors.New("test")
-        fmt.Printf("interf: %v", commands)
         strArr, err= interfaceToString(cmds)
-        fmt.Printf("strArr: %d", len(strArr))
-        fmt.Printf("strArr: %v", strArr)
         c = strArr[0]
         if err != nil {
             return "", err
@@ -116,13 +113,30 @@ func handleCommands (commands interface{}, rMap map[string]string) (string, erro
         st := strArr[1]
         return fmt.Sprintf("$%d\r\n%s\r\n",len(st),st), nil
     case "SET":
-        rMap[strArr[1]] = strArr[2]
+        var valArr []interface{}
+        valArr = append(valArr, strArr[2])
+        if len(strArr) > 3 && strArr[3] == "px"{
+            exp, err := strconv.Atoi(strArr[4])
+            if err != nil {
+                return "", err
+            }
+            valArr = append(valArr,  exp)
+            valArr = append(valArr,  time.Now().UnixMilli())
+        }
+            rMap[strArr[1]] = valArr
         return "+OK\r\n", nil 
     case "GET":
-        val, ok := rMap[strArr[1]]
-        fmt.Printf("map:%s: %s\n", strArr[1], val)
+        valArr, ok := rMap[strArr[1]]
         if !ok {
             return "$-1\r\n", nil
+        }
+        val := valArr[0].(string)
+        if len(valArr) > 1{
+            exp := valArr[1].(int)
+            setTime := valArr[2].(int64)
+            if setTime+int64(exp) < time.Now().UnixMilli() {
+                return "$-1\r\n", nil
+            }
         }
         return fmt.Sprintf("$%d\r\n%s\r\n", len(val), val), nil
     }
