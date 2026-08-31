@@ -31,7 +31,7 @@ func main() {
 
 func handleClient(client net.Conn) {
 	defer client.Close()
-	redisMap := make(map[string]redisValue)
+	store := make(map[string]redisValue)
 	for {
 		readBuffer := make([]byte, 512)
 		_, err := client.Read(readBuffer)
@@ -46,7 +46,7 @@ func handleClient(client net.Conn) {
 		if err != nil {
 			log.Fatal(err)
 		}
-		res, err := handleCommands(parsedResp, redisMap)
+		res, err := handleCommands(parsedResp, store)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -157,7 +157,8 @@ func handleCommands(commands interface{}, rMap map[string]redisValue) (string, e
 				return resp.EncodeArray([]any{"dbFilename", v}), nil
 			}
 		}
-
+	case "RPUSH":
+		return resp.EncodeInt(1), nil
 	}
 	return "", errors.New("invalid commands")
 

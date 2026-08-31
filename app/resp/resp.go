@@ -24,3 +24,7 @@ func EncodeArray(arr []any) string {
 	}
 	return fmt.Sprintf("*%d\r\n%s", len(res), strings.Join(res, ""))
 }
+
+func EncodeInt(i int) string {
+	return fmt.Sprintf(":%d\r\n", i)
+}
