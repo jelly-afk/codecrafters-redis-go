@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"os"
@@ -32,6 +33,7 @@ func main() {
 func handleClient(client net.Conn) {
 	defer client.Close()
 	store := make(map[string]redisValue)
+	listStore := make(map[string][]string)
 	for {
 		readBuffer := make([]byte, 512)
 		_, err := client.Read(readBuffer)
@@ -46,7 +48,7 @@ func handleClient(client net.Conn) {
 		if err != nil {
 			log.Fatal(err)
 		}
-		res, err := handleCommands(parsedResp, store)
+		res, err := handleCommands(parsedResp, store, listStore)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -89,7 +91,7 @@ func parseResp(resp *RESP) (interface{}, error) {
 	return nil, errors.New("invalid resp string")
 }
 
-func handleCommands(commands interface{}, rMap map[string]redisValue) (string, error) {
+func handleCommands(commands interface{}, rMap map[string]redisValue, lStore map[string][]string) (string, error) {
 	c, ok := commands.(string)
 	strArr := make([]string, 0)
 	if !ok {
@@ -158,10 +160,18 @@ func handleCommands(commands interface{}, rMap map[string]redisValue) (string, e
 			}
 		}
 	case "RPUSH":
-		return resp.EncodeInt(1), nil
+		key := strArr[1]
+		val := strArr[2]
+		lStore[key] = append(lStore[key], val)
+		arrLen := len(lStore[key])
+		return resp.EncodeInt(arrLen), nil
 	}
 	return "", errors.New("invalid commands")
 
+}
+
+func appendBulkArr(bulk, val string) string {
+	return fmt.Sprintf("")
 }
 
 func interfaceToString(interfArr []interface{}) ([]string, error) {
