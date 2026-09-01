@@ -14,13 +14,10 @@ const (
 func EncodeBulkString(s string) string {
 	return fmt.Sprintf("$%d\r\n%s\r\n", len(s), s)
 }
-func EncodeArray(arr []any) string {
+func EncodeArray(arr []string) string {
 	res := make([]string, 0)
 	for _, val := range arr {
-		switch v := val.(type) {
-		case string:
-			res = append(res, EncodeBulkString(v))
-		}
+		res = append(res, EncodeBulkString(val))
 	}
 	return fmt.Sprintf("*%d\r\n%s", len(res), strings.Join(res, ""))
 }

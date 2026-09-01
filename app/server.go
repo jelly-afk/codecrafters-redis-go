@@ -149,13 +149,13 @@ func handleCommands(commands interface{}, rMap map[string]redisValue, lStore map
 				if err != nil {
 					return "", err
 				}
-				return resp.EncodeArray([]any{"dir", v}), nil
+				return resp.EncodeArray([]string{"dir", v}), nil
 			case "dbFilename":
 				v, err := getArgs("dbFilename")
 				if err != nil {
 					return "", err
 				}
-				return resp.EncodeArray([]any{"dbFilename", v}), nil
+				return resp.EncodeArray([]string{"dbFilename", v}), nil
 			}
 		}
 	case "RPUSH":
@@ -163,6 +163,25 @@ func handleCommands(commands interface{}, rMap map[string]redisValue, lStore map
 		lStore[key] = append(lStore[key], strArr[2:]...)
 		arrLen := len(lStore[key])
 		return resp.EncodeInt(arrLen), nil
+	case "LRANGE":
+		if len(strArr) < 4 {
+			return "", errors.New("invalid arguments")
+		}
+		key := strArr[1]
+		st, err := strconv.Atoi(strArr[2])
+		if err != nil {
+			return "", errors.New("start range not an integer")
+		}
+		end, err := strconv.Atoi(strArr[3])
+		if err != nil {
+			return "", errors.New("end range not an integer")
+		}
+		rlist, ok := lStore[key]
+		if !ok || st >= len(rlist) || st > end {
+			return resp.EncodeArray([]string{}), nil
+		}
+		end = min(end, len(rlist)-1)
+		return resp.EncodeArray(rlist[st : end+1]), nil
 	}
 	return "", errors.New("invalid commands")
 
