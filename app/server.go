@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"log"
 	"net"
 	"os"
@@ -161,17 +160,12 @@ func handleCommands(commands interface{}, rMap map[string]redisValue, lStore map
 		}
 	case "RPUSH":
 		key := strArr[1]
-		val := strArr[2]
-		lStore[key] = append(lStore[key], val)
+		lStore[key] = append(lStore[key], strArr[2:]...)
 		arrLen := len(lStore[key])
 		return resp.EncodeInt(arrLen), nil
 	}
 	return "", errors.New("invalid commands")
 
-}
-
-func appendBulkArr(bulk, val string) string {
-	return fmt.Sprintf("")
 }
 
 func interfaceToString(interfArr []interface{}) ([]string, error) {
