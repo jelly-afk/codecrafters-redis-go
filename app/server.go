@@ -210,10 +210,20 @@ func handleCommands(commands interface{}, rMap map[string]redisValue, lStore map
 		if !ok || len(valArr) == 0 {
 			return resp.NULL, nil
 		}
-		val := valArr[0]
-		valArr = valArr[1:]
+		if len(strArr) == 2 {
+			val := valArr[0]
+			valArr = valArr[1:]
+			lStore[key] = valArr
+			return resp.EncodeBulkString(val), nil
+		}
+		i, err := strconv.Atoi(strArr[2])
+		if err != nil {
+			return "", errors.New("invalid arguments")
+		}
+		val := valArr[:i]
+		valArr = valArr[i:]
 		lStore[key] = valArr
-		return resp.EncodeBulkString(val), nil
+		return resp.EncodeArray(val), nil
 
 	}
 	return "", errors.New("invalid commands")
