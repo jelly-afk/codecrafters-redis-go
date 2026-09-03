@@ -200,6 +200,10 @@ func handleCommands(commands interface{}, rMap map[string]redisValue, lStore map
 		lStore[key] = valArr
 		return resp.EncodeInt(len(valArr)), nil
 
+	case "LLEN":
+		key := strArr[1]
+		return resp.EncodeInt(len(lStore[key])), nil
+
 	}
 	return "", errors.New("invalid commands")
 }
