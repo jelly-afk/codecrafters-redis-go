@@ -177,14 +177,34 @@ func handleCommands(commands interface{}, rMap map[string]redisValue, lStore map
 			return "", errors.New("end range not an integer")
 		}
 		rlist, ok := lStore[key]
-		if !ok || st >= len(rlist) || st > end {
+		if !ok || len(rlist) == 0 {
 			return resp.EncodeArray([]string{}), nil
 		}
-		end = min(end, len(rlist)-1)
-		return resp.EncodeArray(rlist[st : end+1]), nil
+		st, end, valid := normalizeLrange(st, end, len(rlist))
+		log.Println(st, end, valid)
+		if !valid {
+			return resp.EncodeArray([]string{}), nil
+		}
+		return resp.EncodeArray(rlist[st:end]), nil
 	}
 	return "", errors.New("invalid commands")
+}
 
+func normalizeLrange(st, end, length int) (int, int, bool) {
+	if st < 0 {
+		st = st + length
+	}
+	if end < 0 {
+		end = end + length
+	}
+	if st < 0 {
+		st = 0
+	}
+	if st >= length || st > end {
+		return 0, 0, false
+	}
+	end = min(end, length-1)
+	return st, end + 1, true
 }
 
 func interfaceToString(interfArr []interface{}) ([]string, error) {
