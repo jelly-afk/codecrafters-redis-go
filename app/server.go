@@ -160,8 +160,10 @@ func handleCommands(commands interface{}, rMap map[string]redisValue, lStore map
 		}
 	case "RPUSH":
 		key := strArr[1]
-		lStore[key] = append(lStore[key], strArr[2:]...)
-		arrLen := len(lStore[key])
+		valArr := lStore[key]
+		valArr = append(valArr, strArr[2:]...)
+		arrLen := len(valArr)
+		lStore[key] = valArr
 		return resp.EncodeInt(arrLen), nil
 	case "LRANGE":
 		if len(strArr) < 4 {
@@ -186,6 +188,22 @@ func handleCommands(commands interface{}, rMap map[string]redisValue, lStore map
 			return resp.EncodeArray([]string{}), nil
 		}
 		return resp.EncodeArray(rlist[st:end]), nil
+	case "LPUSH":
+		if len(strArr) < 3 {
+			return "", errors.New("invalid arguments")
+		}
+		key := strArr[1]
+		valArr := lStore[key]
+		nlen := len(strArr) - 2
+		valArr = append(valArr, strArr[2:]...)
+		copy(valArr[nlen:], valArr)
+		for i := range nlen {
+			valArr[i] = strArr[nlen-i-1]
+		}
+		arrLen := len(valArr)
+		lStore[key] = valArr
+		return resp.EncodeInt(arrLen), nil
+
 	}
 	return "", errors.New("invalid commands")
 }
