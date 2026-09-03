@@ -204,6 +204,17 @@ func handleCommands(commands interface{}, rMap map[string]redisValue, lStore map
 		key := strArr[1]
 		return resp.EncodeInt(len(lStore[key])), nil
 
+	case "LPOP":
+		key := strArr[1]
+		valArr, ok := lStore[key]
+		if !ok || len(valArr) == 0 {
+			return resp.NULL, nil
+		}
+		val := valArr[0]
+		valArr = valArr[1:]
+		lStore[key] = valArr
+		return resp.EncodeBulkString(val), nil
+
 	}
 	return "", errors.New("invalid commands")
 }
