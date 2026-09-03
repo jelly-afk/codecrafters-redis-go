@@ -162,9 +162,8 @@ func handleCommands(commands interface{}, rMap map[string]redisValue, lStore map
 		key := strArr[1]
 		valArr := lStore[key]
 		valArr = append(valArr, strArr[2:]...)
-		arrLen := len(valArr)
 		lStore[key] = valArr
-		return resp.EncodeInt(arrLen), nil
+		return resp.EncodeInt(len(valArr)), nil
 	case "LRANGE":
 		if len(strArr) < 4 {
 			return "", errors.New("invalid arguments")
@@ -183,7 +182,6 @@ func handleCommands(commands interface{}, rMap map[string]redisValue, lStore map
 			return resp.EncodeArray([]string{}), nil
 		}
 		st, end, valid := normalizeLrange(st, end, len(rlist))
-		log.Println(st, end, valid)
 		if !valid {
 			return resp.EncodeArray([]string{}), nil
 		}
@@ -194,15 +192,13 @@ func handleCommands(commands interface{}, rMap map[string]redisValue, lStore map
 		}
 		key := strArr[1]
 		valArr := lStore[key]
-		nlen := len(strArr) - 2
 		valArr = append(valArr, strArr[2:]...)
-		copy(valArr[nlen:], valArr)
-		for i := range nlen {
-			valArr[i] = strArr[nlen-i-1]
+		copy(valArr[len(strArr)-2:], valArr)
+		for i := range len(strArr) - 2 {
+			valArr[i] = strArr[len(strArr)-i-1]
 		}
-		arrLen := len(valArr)
 		lStore[key] = valArr
-		return resp.EncodeInt(arrLen), nil
+		return resp.EncodeInt(len(valArr)), nil
 
 	}
 	return "", errors.New("invalid commands")
