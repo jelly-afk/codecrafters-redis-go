@@ -15,7 +15,7 @@ func EncodeBulkString(s string) string {
 	return fmt.Sprintf("$%d\r\n%s\r\n", len(s), s)
 }
 func EncodeArray(arr []string) string {
-	res := make([]string, 0)
+	res := make([]string, 0, len(arr))
 	for _, val := range arr {
 		res = append(res, EncodeBulkString(val))
 	}

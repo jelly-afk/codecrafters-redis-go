@@ -7,49 +7,95 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/codecrafters-io/redis-starter-go/app/resp"
 )
 
-var _ = net.Listen
-var _ = os.Exit
+type Store struct {
+	data      map[string]redisValue
+	list      map[string][]string
+	listChans map[string][]chan struct{}
+	mu        *sync.Mutex
+}
+
+func newStore() *Store {
+	return &Store{
+		data:      make(map[string]redisValue),
+		list:      make(map[string][]string),
+		listChans: map[string][]chan struct{}{},
+		mu:        &sync.Mutex{},
+	}
+}
+
+type redisValue struct {
+	value     string
+	expiresAt int64
+}
+
+// RESP holds the raw RESP protocol string and a cursor index for parsing.
+type RESP struct {
+	respStr string
+	idx     int
+}
+
+// commandHandler is the function signature all command handlers must satisfy.
+type commandHandler func(args []string, s *Store) (string, error)
+
+// handlers maps command names to their handler functions.
+var handlers = map[string]commandHandler{
+	"PING":   handlePing,
+	"ECHO":   handleEcho,
+	"SET":    handleSet,
+	"GET":    handleGet,
+	"CONFIG": handleConfig,
+	"RPUSH":  handleRPush,
+	"LPUSH":  handleLPush,
+	"LRANGE": handleLRange,
+	"LLEN":   handleLLen,
+	"LPOP":   handleLPop,
+	"BLPOP":  handleBLPop,
+}
 
 func main() {
-
 	l, err := net.Listen("tcp", "0.0.0.0:6379")
 	if err != nil {
 		os.Exit(1)
 	}
+	store := newStore()
 	for {
 		tcpConn, err := l.Accept()
 		if err != nil {
+			log.Println(err)
+			continue
 		}
-		go handleClient(tcpConn)
+		go handleClient(tcpConn, store)
 	}
 }
 
-func handleClient(client net.Conn) {
+func handleClient(client net.Conn, store *Store) {
 	defer client.Close()
-	store := make(map[string]redisValue)
-	listStore := make(map[string][]string)
 	for {
 		readBuffer := make([]byte, 512)
-		_, err := client.Read(readBuffer)
+		n, err := client.Read(readBuffer)
 		if err != nil {
+			log.Println(err)
 			return
 		}
-		resp := &RESP{
-			respStr: string(readBuffer),
+		r := &RESP{
+			respStr: string(readBuffer[:n]),
 			idx:     0,
 		}
-		parsedResp, err := parseResp(resp)
+		parsedResp, err := parseResp(r)
 		if err != nil {
-			log.Fatal(err)
+			log.Println(err)
+			return
 		}
-		res, err := handleCommands(parsedResp, store, listStore)
+		res, err := handleCommands(parsedResp, store)
 		if err != nil {
-			log.Fatal(err)
+			log.Println(err)
+			return
 		}
 		_, err = client.Write([]byte(res))
 		if err != nil {
@@ -58,175 +104,313 @@ func handleClient(client net.Conn) {
 	}
 }
 
-func parseResp(resp *RESP) (interface{}, error) {
-	switch resp.respStr[resp.idx] {
+// handleCommands is a function dispatcher
+func handleCommands(commands any, s *Store) (string, error) {
+	args, err := toStringSlice(commands)
+	if err != nil {
+		return "", err
+	}
+	if len(args) == 0 {
+		return "", errors.New("empty command")
+	}
+
+	cmd := strings.ToUpper(args[0])
+	handler, ok := handlers[cmd]
+	if !ok {
+		return "", errors.New("unknown command: " + cmd)
+	}
+	return handler(args, s)
+}
+
+func toStringSlice(commands interface{}) ([]string, error) {
+	switch v := commands.(type) {
+	case string:
+		return []string{strings.TrimSpace(v)}, nil
+	case []interface{}:
+		return interfaceToString(v)
+	default:
+		return nil, errors.New("unsupported command type")
+	}
+}
+
+func handlePing(_ []string, _ *Store) (string, error) {
+	return resp.PONG, nil
+}
+
+func handleEcho(args []string, _ *Store) (string, error) {
+	if len(args) < 2 {
+		return "", errors.New("ECHO requires an argument")
+	}
+	return resp.EncodeBulkString(args[1]), nil
+}
+
+func handleSet(args []string, s *Store) (string, error) {
+	if len(args) < 3 {
+		return "", errors.New("SET requires key and value")
+	}
+	key := args[1]
+	val := args[2]
+	var expiresAt int64
+	if len(args) > 3 && strings.ToUpper(args[3]) == "PX" {
+		if len(args) < 5 {
+			return "", errors.New("SET PX requires a millisecond value")
+		}
+		exp, err := strconv.Atoi(args[4])
+		if err != nil {
+			return "", err
+		}
+		expiresAt = time.Now().UnixMilli() + int64(exp)
+	}
+	s.data[key] = redisValue{value: val, expiresAt: expiresAt}
+	return resp.OK, nil
+}
+
+func handleGet(args []string, s *Store) (string, error) {
+	if len(args) < 2 {
+		return "", errors.New("GET requires a key")
+	}
+	redisVal, ok := s.data[args[1]]
+	if !ok {
+		return resp.NULL, nil
+	}
+	if redisVal.expiresAt > 0 && redisVal.expiresAt < time.Now().UnixMilli() {
+		return resp.NULL, nil
+	}
+	return resp.EncodeBulkString(redisVal.value), nil
+}
+
+func handleConfig(args []string, _ *Store) (string, error) {
+	if len(args) < 3 {
+		return "", errors.New("CONFIG requires a subcommand and parameter")
+	}
+	if strings.ToUpper(args[1]) != "GET" {
+		return "", errors.New("unsupported CONFIG subcommand: " + args[1])
+	}
+	param := args[2]
+	v, err := getArgs(param)
+	if err != nil {
+		return "", err
+	}
+	return resp.EncodeArray([]string{param, v}), nil
+}
+
+func handleRPush(args []string, s *Store) (string, error) {
+	if len(args) < 3 {
+		return "", errors.New("RPUSH requires key and at least one value")
+	}
+	key := args[1]
+	newItems := args[2:]
+	s.mu.Lock()
+	lChans, ok := s.listChans[key]
+	if ok && len(lChans) > 0 {
+		for range newItems {
+			if len(lChans) > 0 {
+				ch := lChans[0]
+				lChans = lChans[1:]
+				s.listChans[key] = lChans
+				ch <- struct{}{}
+			} else {
+				break
+			}
+		}
+	}
+	s.list[key] = append(s.list[key], newItems...)
+	s.listChans[key] = lChans
+	s.mu.Unlock()
+	return resp.EncodeInt(len(s.list[key])), nil
+}
+
+func handleLPush(args []string, s *Store) (string, error) {
+	if len(args) < 3 {
+		return "", errors.New("LPUSH requires key and at least one value")
+	}
+	key := args[1]
+	s.mu.Lock()
+	existing := s.list[key]
+	newItems := args[2:]
+	reversed := make([]string, len(newItems))
+	for i, v := range newItems {
+		reversed[len(newItems)-1-i] = v
+	}
+	s.list[key] = append(reversed, existing...)
+	lChans, ok := s.listChans[key]
+	if ok && len(lChans) > 0 {
+		for range newItems {
+			if len(lChans) > 0 {
+				ch := lChans[0]
+				lChans = lChans[1:]
+				ch <- struct{}{}
+			} else {
+				break
+			}
+		}
+	}
+	s.listChans[key] = lChans
+	s.mu.Unlock()
+	return resp.EncodeInt(len(s.list[key])), nil
+}
+
+func handleLRange(args []string, s *Store) (string, error) {
+	if len(args) < 4 {
+		return "", errors.New("LRANGE requires key, start, and stop")
+	}
+	key := args[1]
+	st, err := strconv.Atoi(args[2])
+	if err != nil {
+		return "", errors.New("start range not an integer")
+	}
+	end, err := strconv.Atoi(args[3])
+	if err != nil {
+		return "", errors.New("end range not an integer")
+	}
+	rlist := s.list[key]
+	if len(rlist) == 0 {
+		return resp.EncodeArray([]string{}), nil
+	}
+	st, end, valid := normalizeLrange(st, end, len(rlist))
+	if !valid {
+		return resp.EncodeArray([]string{}), nil
+	}
+	return resp.EncodeArray(rlist[st:end]), nil
+}
+
+func handleLLen(args []string, s *Store) (string, error) {
+	if len(args) < 2 {
+		return "", errors.New("LLEN requires a key")
+	}
+	return resp.EncodeInt(len(s.list[args[1]])), nil
+}
+
+func handleLPop(args []string, s *Store) (string, error) {
+	if len(args) < 2 {
+		return "", errors.New("LPOP requires a key")
+	}
+	key := args[1]
+	valArr, ok := s.list[key]
+	if !ok || len(valArr) == 0 {
+		return resp.NULL, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(args) == 2 {
+		val := valArr[0]
+		s.list[key] = valArr[1:]
+		return resp.EncodeBulkString(val), nil
+	}
+	count, err := strconv.Atoi(args[2])
+	if err != nil {
+		return "", errors.New("LPOP count is not an integer")
+	}
+	if count > len(valArr) {
+		count = len(valArr)
+	}
+	val := valArr[:count]
+	s.list[key] = valArr[count:]
+	return resp.EncodeArray(val), nil
+}
+
+func handleBLPop(args []string, s *Store) (string, error) {
+	if len(args) < 2 {
+		return "", errors.New("B2LPOP requires a key")
+	}
+	key := args[1]
+	var timeout int
+	if len(args) > 2 {
+		tt, err := strconv.Atoi(args[2])
+		if err != nil {
+			return "", errors.New("invalid timeout")
+		}
+		timeout = tt
+	}
+	s.mu.Lock()
+	valArr, ok := s.list[key]
+	if ok && len(valArr) > 0 {
+		val := valArr[0]
+		s.list[key] = valArr[1:]
+		s.mu.Unlock()
+		return resp.EncodeArray([]string{key, val}), nil
+	}
+	ch := make(chan struct{}, 1)
+	s.listChans[key] = append(s.listChans[key], ch)
+	s.mu.Unlock()
+	if timeout > 0 {
+		timeoutCh := time.After(time.Duration(timeout) * time.Second)
+		for {
+			select {
+			case <-ch:
+				s.mu.Lock()
+				valArr := s.list[key]
+				if len(valArr) < 1 {
+					s.listChans[key] = append(s.listChans[key], ch)
+					s.mu.Unlock()
+					continue
+				}
+				val := valArr[0]
+				s.list[key] = valArr[1:]
+				s.mu.Unlock()
+				return resp.EncodeArray([]string{key, val}), nil
+			case <-timeoutCh:
+				s.mu.Lock()
+				chArr := s.listChans[key]
+				if len(chArr) > 0 {
+					for i, cha := range chArr {
+						if cha == ch {
+							chArr = append(chArr[:i], chArr[i+1:]...)
+							s.listChans[key] = chArr
+							break
+						}
+					}
+				}
+				s.mu.Unlock()
+				return resp.NULL, nil
+			}
+		}
+	} else {
+		for range ch {
+			s.mu.Lock()
+			valArr := s.list[key]
+			if len(valArr) < 1 {
+				s.listChans[key] = append(s.listChans[key], ch)
+				s.mu.Unlock()
+				continue
+			}
+			val := valArr[0]
+			s.list[key] = valArr[1:]
+			s.mu.Unlock()
+			return resp.EncodeArray([]string{key, val}), nil
+		}
+	}
+	return resp.NULL, nil
+}
+
+func parseResp(r *RESP) (interface{}, error) {
+	switch r.respStr[r.idx] {
 	case '*':
-		endIdx := strings.Index(resp.respStr[resp.idx:], "\r\n")
-		arrLen, err := strconv.Atoi(resp.respStr[resp.idx+1 : resp.idx+endIdx])
+		endIdx := strings.Index(r.respStr[r.idx:], "\r\n")
+		arrLen, err := strconv.Atoi(r.respStr[r.idx+1 : r.idx+endIdx])
 		if err != nil {
 			return nil, err
 		}
 		res := make([]interface{}, arrLen)
-		resp.idx += endIdx + 2
+		r.idx += endIdx + 2
 		for i := 0; i < arrLen; i++ {
-			res[i], err = parseResp(resp)
+			res[i], err = parseResp(r)
 			if err != nil {
-				log.Fatal(err)
+				return nil, err
 			}
 		}
 		return res, nil
 	case '$':
-		endIdx := strings.Index(resp.respStr[resp.idx:], "\r\n")
-		strLen, err := strconv.Atoi(resp.respStr[resp.idx+1 : resp.idx+endIdx])
+		endIdx := strings.Index(r.respStr[r.idx:], "\r\n")
+		strLen, err := strconv.Atoi(r.respStr[r.idx+1 : r.idx+endIdx])
 		if err != nil {
 			return nil, err
 		}
-		str := resp.respStr[resp.idx+endIdx+2 : resp.idx+endIdx+2+strLen]
-		resp.idx += endIdx + 4 + strLen
+		str := r.respStr[r.idx+endIdx+2 : r.idx+endIdx+2+strLen]
+		r.idx += endIdx + 4 + strLen
 		return str, nil
-
 	}
-
 	return nil, errors.New("invalid resp string")
-}
-
-func handleCommands(commands interface{}, rMap map[string]redisValue, lStore map[string][]string) (string, error) {
-	c, ok := commands.(string)
-	strArr := make([]string, 0)
-	if !ok {
-		cmds, ok := commands.([]interface{})
-		if !ok {
-			return "", errors.New("not an array")
-		}
-		err := errors.New("test")
-		strArr, err = interfaceToString(cmds)
-		c = strArr[0]
-		if err != nil {
-			return "", err
-		}
-	}
-	switch c {
-	case "PING":
-		return resp.PONG, nil
-	case "ECHO":
-		st := strArr[1]
-		return resp.EncodeBulkString(st), nil
-	case "SET":
-		key := strArr[1]
-		val := strArr[2]
-		var expiresAt int64
-		if len(strArr) > 3 && strArr[3] == "PX" {
-			exp, err := strconv.Atoi(strArr[4])
-			if err != nil {
-				return "", err
-			}
-			expiresAt = time.Now().UnixMilli() + int64(exp)
-		}
-		rMap[key] = redisValue{
-			value:     val,
-			expiresAt: expiresAt,
-		}
-		return resp.OK, nil
-	case "GET":
-		redisVal, ok := rMap[strArr[1]]
-		if !ok {
-			return resp.NULL, nil
-		}
-		if redisVal.expiresAt > 0 {
-			if redisVal.expiresAt < time.Now().UnixMilli() {
-				return resp.NULL, nil
-			}
-		}
-		return resp.EncodeBulkString(redisVal.value), nil
-	case "CONFIG":
-		if len(strArr) < 3 {
-			return "", errors.New("invalid commands")
-		}
-		if strArr[1] == "GET" {
-			switch strArr[2] {
-			case "dir":
-				v, err := getArgs("dir")
-				if err != nil {
-					return "", err
-				}
-				return resp.EncodeArray([]string{"dir", v}), nil
-			case "dbFilename":
-				v, err := getArgs("dbFilename")
-				if err != nil {
-					return "", err
-				}
-				return resp.EncodeArray([]string{"dbFilename", v}), nil
-			}
-		}
-	case "RPUSH":
-		key := strArr[1]
-		valArr := lStore[key]
-		valArr = append(valArr, strArr[2:]...)
-		lStore[key] = valArr
-		return resp.EncodeInt(len(valArr)), nil
-	case "LRANGE":
-		if len(strArr) < 4 {
-			return "", errors.New("invalid arguments")
-		}
-		key := strArr[1]
-		st, err := strconv.Atoi(strArr[2])
-		if err != nil {
-			return "", errors.New("start range not an integer")
-		}
-		end, err := strconv.Atoi(strArr[3])
-		if err != nil {
-			return "", errors.New("end range not an integer")
-		}
-		rlist, ok := lStore[key]
-		if !ok || len(rlist) == 0 {
-			return resp.EncodeArray([]string{}), nil
-		}
-		st, end, valid := normalizeLrange(st, end, len(rlist))
-		if !valid {
-			return resp.EncodeArray([]string{}), nil
-		}
-		return resp.EncodeArray(rlist[st:end]), nil
-	case "LPUSH":
-		if len(strArr) < 3 {
-			return "", errors.New("invalid arguments")
-		}
-		key := strArr[1]
-		valArr := lStore[key]
-		valArr = append(valArr, strArr[2:]...)
-		copy(valArr[len(strArr)-2:], valArr)
-		for i := range len(strArr) - 2 {
-			valArr[i] = strArr[len(strArr)-i-1]
-		}
-		lStore[key] = valArr
-		return resp.EncodeInt(len(valArr)), nil
-
-	case "LLEN":
-		key := strArr[1]
-		return resp.EncodeInt(len(lStore[key])), nil
-
-	case "LPOP":
-		key := strArr[1]
-		valArr, ok := lStore[key]
-		if !ok || len(valArr) == 0 {
-			return resp.NULL, nil
-		}
-		if len(strArr) == 2 {
-			val := valArr[0]
-			valArr = valArr[1:]
-			lStore[key] = valArr
-			return resp.EncodeBulkString(val), nil
-		}
-		i, err := strconv.Atoi(strArr[2])
-		if err != nil {
-			return "", errors.New("invalid arguments")
-		}
-		val := valArr[:i]
-		valArr = valArr[i:]
-		lStore[key] = valArr
-		return resp.EncodeArray(val), nil
-
-	}
-	return "", errors.New("invalid commands")
 }
 
 func normalizeLrange(st, end, length int) (int, int, bool) {
@@ -246,40 +430,32 @@ func normalizeLrange(st, end, length int) (int, int, bool) {
 	return st, end + 1, true
 }
 
-func interfaceToString(interfArr []interface{}) ([]string, error) {
-	strArr := make([]string, 0)
+func interfaceToString(interfArr []any) ([]string, error) {
+	strArr := make([]string, 0, len(interfArr))
 	for _, s := range interfArr {
 		st, ok := s.(string)
 		if !ok {
 			return nil, errors.New("non string value found")
 		}
-		trimmedSt := strings.TrimSpace(st)
-		if len(trimmedSt) < 1 {
+		trimmed := strings.TrimSpace(st)
+		if len(trimmed) < 1 {
 			continue
 		}
-		strArr = append(strArr, trimmedSt)
+		strArr = append(strArr, trimmed)
 	}
 	return strArr, nil
 }
 
 func getArgs(arg string) (string, error) {
-	if len(strings.Trim(arg, " ")) < 1 {
+	arg = strings.TrimSpace(arg)
+	if len(arg) < 1 {
 		return "", errors.New("invalid argument")
 	}
+	flag := "--" + arg
 	for i, s := range os.Args {
-		if strings.Trim(s, " ") == "--"+strings.Trim(arg, " ") && len(os.Args) > i+1 {
+		if strings.TrimSpace(s) == flag && len(os.Args) > i+1 {
 			return os.Args[i+1], nil
 		}
 	}
-	return "", errors.New("argument not found")
-}
-
-type RESP struct {
-	respStr string
-	idx     int
-}
-
-type redisValue struct {
-	value     string
-	expiresAt int64
+	return "", errors.New("argument not found: " + arg)
 }
