@@ -6,9 +6,10 @@ import (
 )
 
 const (
-	PONG = "+PONG\r\n"
-	OK   = "+OK\r\n"
-	NULL = "$-1\r\n"
+	PONG       = "+PONG\r\n"
+	OK         = "+OK\r\n"
+	NULL       = "$-1\r\n"
+	NULL_ARRAY = "*-1\r\n"
 )
 
 func EncodeBulkString(s string) string {

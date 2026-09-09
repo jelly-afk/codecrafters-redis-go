@@ -314,9 +314,9 @@ func handleBLPop(args []string, s *Store) (string, error) {
 		return "", errors.New("B2LPOP requires a key")
 	}
 	key := args[1]
-	var timeout int
+	var timeout float64
 	if len(args) > 2 {
-		tt, err := strconv.Atoi(args[2])
+		tt, err := strconv.ParseFloat(args[2], 64)
 		if err != nil {
 			return "", errors.New("invalid timeout")
 		}
@@ -335,7 +335,7 @@ func handleBLPop(args []string, s *Store) (string, error) {
 	s.mu.Unlock()
 	var timeoutCh <-chan time.Time
 	if timeout > 0 {
-		timeoutCh = time.After(time.Duration(timeout) * time.Second)
+		timeoutCh = time.After(time.Duration(timeout * float64(time.Second)))
 	}
 	for {
 		select {
@@ -364,7 +364,7 @@ func handleBLPop(args []string, s *Store) (string, error) {
 				}
 			}
 			s.mu.Unlock()
-			return resp.NULL, nil
+			return resp.NULL_ARRAY, nil
 		}
 	}
 }
